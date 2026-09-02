@@ -1,0 +1,30 @@
+# Stream-to-Shorts MAS — Core Dependencies
+# Install via setup.ps1 (uses --extra-index-url for CPU-only torch)
+
+# Video download & stream capture
+yt-dlp>=2024.11.4
+streamlink>=7.0.0
+
+# Speech recognition (CPU inference, int8)
+faster-whisper>=1.1.0
+
+# ML backend — CPU-only build (avoids ~2 GB CUDA wheel on 16 GB RAM)
+# Resolved from https://download.pytorch.org/whl/cpu via setup.ps1
+torch>=2.5.0
+
+# Video processing wrapper (requires FFmpeg binary on PATH)
+ffmpeg-python>=0.2.0
+
+# Data validation & structured outputs
+pydantic>=2.0.0
+
+# LLM client — uses Ollama's OpenAI-compatible endpoint
+openai>=1.0.0
+
+# System metrics (RAM usage reporting in verify_setup.py)
+psutil>=6.0.0
+
+# Phase 2: LangGraph orchestration + audio analysis
+langgraph>=1.2.0
+numpy>=1.24.0
+silero-vad>=4.0.0

@@ -10,27 +10,27 @@ hardware_budget: 16GB RAM (Local Setup)
 ---
 
 ## Phase 1: Environment & Tooling Setup
-- [ ] **Python Environment initialisieren**
-	- [ ] Virtual Environment mit Python 3.10+ anlegen (`.venv`).
-	- [ ] Kern-Libraries installieren: `yt-dlp`, `streamlink`, `faster-whisper`, `torch`, `ffmpeg-python`, `pydantic`, `openai`.
-- [ ] **Lokale LLM-Infrastruktur einrichten**
-	- [ ] Ollama installieren und konfigurieren.
-	- [ ] `qwen2.5:7b-instruct-q4_k_m` herunterladen und RAM-Auslastung (< 5 GB) prüfen.
-	- [ ] Fallback-Modell `llama3.2:3b` für High-Speed-Klassifikation testen.
-	- [ ] `num_ctx 8192` in Modelfile/Ollama-Config hinterlegen, um KV-Cache-Explosion zu verhindern.
+- [x] **Python Environment initialisieren**
+	- [x] Virtual Environment mit Python 3.10+ anlegen (`.venv`). — Python 3.13.2, `.venv` erstellt
+	- [x] Kern-Libraries installieren: `yt-dlp`, `streamlink`, `faster-whisper`, `torch`, `ffmpeg-python`, `pydantic`, `openai`. — torch 2.14.0+cpu, alle imports OK
+- [x] **Lokale LLM-Infrastruktur einrichten**
+	- [x] Ollama installieren und konfigurieren. — Ollama 0.32.11
+	- [x] `qwen2.5:7b-instruct-q4_k_m` herunterladen und RAM-Auslastung (< 5 GB) prüfen. — 4.7 GB, RAM-Nutzung nach Inferenz: 14.1/15.8 GB
+	- [x] Fallback-Modell `llama3.2:3b` für High-Speed-Klassifikation testen. — 2.0 GB, gepullt
+	- [x] `num_ctx 8192` in Modelfile/Ollama-Config hinterlegen, um KV-Cache-Explosion zu verhindern. — `shorts-llm` registriert via config/Modelfile.qwen25
 
 ---
 
 ## Phase 2: Ingestion & Signal Detection (Tier 1 & 2)
-- [ ] **Twitch IRC Ingestion (Scout Agent)**
-	- [ ] Verbindung zu Twitch IRC via Websocket/Socket aufbauen (anonym oder Bot-Token).
-	- [ ] Chat-Message-Buffer implementieren (Nachrichten pro 5-Sekunden-Fenster zählen).
-	- [ ] Rolling-Average-Algorithmus zur Erkennung von Velocity-Spikes und Emote-Floods schreiben.
-- [ ] **Audio-Energy & VAD Filter (Detector Agent)**
-	- [ ] Live-Segment-Download (60–90 Sekunden) via `streamlink` / `yt-dlp` bei getriggertem Chat-Spike.
-	- [ ] Audio-Stream mit `ffmpeg` als WAV (16kHz Mono) extrahieren.
-	- [ ] `silero-vad` integrieren, um Sprachpausen und Stillebereiche zu taggen.
-	- [ ] Audio-Peak-Detection (RMS/Pitch) zur Validierung von Gelächter/Lautstärke-Spitzen aufsetzen.
+- [x] **Twitch IRC Ingestion (Scout Agent)**
+	- [x] Verbindung zu Twitch IRC via Websocket/Socket aufbauen (anonym oder Bot-Token). — `agents/scout_agent.py`, anonym via `justinfan<random>`
+	- [x] Chat-Message-Buffer implementieren (Nachrichten pro 5-Sekunden-Fenster zählen). — `collections.deque`, 5s-Fenster
+	- [x] Rolling-Average-Algorithmus zur Erkennung von Velocity-Spikes und Emote-Floods schreiben. — 30-Fenster-Baseline, 3.0x-Multiplikator
+- [x] **Audio-Energy & VAD Filter (Detector Agent)**
+	- [x] Live-Segment-Download (60–90 Sekunden) via `streamlink` / `yt-dlp` bei getriggertem Chat-Spike. — `agents/graph.py` Node `download_segment`, 75s via streamlink|ffmpeg
+	- [x] Audio-Stream mit `ffmpeg` als WAV (16kHz Mono) extrahieren. — Node `extract_audio`, ffmpeg-python
+	- [x] `silero-vad` integrieren, um Sprachpausen und Stillebereiche zu taggen. — Node `run_vad`, silero-vad 6.2.1
+	- [x] Audio-Peak-Detection (RMS/Pitch) zur Validierung von Gelächter/Lautstärke-Spitzen aufsetzen. — Node `analyze_rms`, numpy 500ms sliding window
 
 ---
 

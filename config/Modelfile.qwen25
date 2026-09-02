@@ -1,0 +1,4 @@
+FROM qwen2.5:7b-instruct-q4_k_m
+
+# Limit context window to prevent KV-cache explosion on 16 GB RAM
+PARAMETER num_ctx 8192
