@@ -1,8 +1,10 @@
 """
-Phase 2 Pipeline — Top-level coordinator.
+Phase 2+3 Pipeline — Top-level coordinator.
 
 Wires the Scout Agent (asyncio IRC listener) to the LangGraph detection
-pipeline. Each ChatSpike from the Scout triggers one graph.ainvoke() call.
+and packaging pipeline. Each ChatSpike triggers one graph.ainvoke() call
+that runs the full Phase 2+3 chain:
+  IRC spike -> download -> VAD -> RMS -> ASR -> LLM -> clips.jsonl
 
 Usage::
 
@@ -16,7 +18,9 @@ Environment variables:
     TWITCH_CHANNEL      Twitch channel to monitor (required if --channel not passed)
     SPIKE_MULTIPLIER    Chat velocity multiplier threshold (default 3.0)
     SEGMENT_DURATION    Clip length in seconds (default 75)
-    RMS_THRESHOLD       Minimum RMS peak to pass (default 0.05)
+    RMS_THRESHOLD       Minimum RMS peak to pass Phase 2 (default 0.05)
+    VIRALITY_THRESHOLD  Minimum virality score to pass Phase 3 (default 6.0)
+    WHISPER_MODEL       faster-whisper model name (default base.en)
     BASELINE_WINDOWS    Rolling-average window count (default 30)
 """
 
@@ -34,7 +38,7 @@ from langgraph.checkpoint.memory import MemorySaver  # type: ignore[import-untyp
 
 from agents.graph import Phase2State, build_graph
 from agents.scout_agent import ScoutAgent
-from models.signals import AudioAnalysis, ChatSpike
+from models.signals import ChatSpike, ClipMetadata
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -45,19 +49,6 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("pipeline")
-
-# ---------------------------------------------------------------------------
-# Candidate log
-# ---------------------------------------------------------------------------
-CANDIDATES_LOG = Path("output/candidates.jsonl")
-CANDIDATES_LOG.parent.mkdir(parents=True, exist_ok=True)
-
-
-def _log_candidate(candidate: AudioAnalysis) -> None:
-    """Append a JSON line to output/candidates.jsonl for Phase 3 consumption."""
-    with CANDIDATES_LOG.open("a", encoding="utf-8") as fh:
-        fh.write(candidate.model_dump_json() + "\n")
-    logger.info("Candidate written to %s", CANDIDATES_LOG)
 
 
 # ---------------------------------------------------------------------------
@@ -87,21 +78,33 @@ async def process_spikes(
                 "rms_mean": 0.0,
                 "has_audio_event": False,
                 "candidate": None,
+                # Phase 3 fields
+                "transcript_text": "",
+                "word_timestamps": [],
+                "language": "en",
+                "clip_metadata": None,
             }
-            logger.info("Invoking detection graph for spike: %s", spike.label)
+            logger.info("Invoking pipeline for spike: %s", spike.label)
             try:
                 result = await graph.ainvoke(initial_state, config=config)
-                candidate: AudioAnalysis | None = result.get("candidate")
-                if candidate:
-                    _log_candidate(candidate)
+                clip: ClipMetadata | None = result.get("clip_metadata")
+                if clip and clip.passed_threshold:
                     logger.info(
-                        "PASS  channel=%-20s rms_peak=%.4f  vad_segs=%d",
-                        candidate.spike.channel,
-                        candidate.rms_peak,
-                        len(candidate.vad_segments),
+                        "FINALIZED  channel=%-20s score=%.1f  title=%r  tags=%s",
+                        spike.channel,
+                        clip.virality_score,
+                        clip.title,
+                        clip.tags,
+                    )
+                elif clip:
+                    logger.info(
+                        "LOW_SCORE  channel=%-20s score=%.1f  title=%r",
+                        spike.channel,
+                        clip.virality_score,
+                        clip.title,
                     )
                 else:
-                    logger.info("SKIP  channel=%s (below threshold)", spike.channel)
+                    logger.info("SKIP  channel=%s (below RMS threshold)", spike.channel)
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 logger.exception("Graph invocation failed for spike %s: %s", spike.label, exc)
 
@@ -115,7 +118,7 @@ async def process_spikes(
 # Entry point
 # ---------------------------------------------------------------------------
 async def main(channel: str) -> None:
-    logger.info("=== Phase 2 Pipeline starting for channel: #%s ===", channel)
+    logger.info("=== Phase 2+3 Pipeline starting for channel: #%s ===", channel)
 
     checkpointer = MemorySaver()
     graph = build_graph(checkpointer=checkpointer)
@@ -140,7 +143,7 @@ async def main(channel: str) -> None:
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Stream-to-Shorts Phase 2 Pipeline")
+    parser = argparse.ArgumentParser(description="Stream-to-Shorts Phase 2+3 Pipeline")
     parser.add_argument(
         "--channel",
         default=os.getenv("TWITCH_CHANNEL", ""),

@@ -220,3 +220,4 @@ __marimo__/
 # Phase 2 output
 output/segments/
 output/candidates.jsonl
+output/clips.jsonl

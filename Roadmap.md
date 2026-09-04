@@ -35,15 +35,15 @@ hardware_budget: 16GB RAM (Local Setup)
 ---
 
 ## Phase 3: ASR & LLM Packaging Agent (Tier 3)
-- [ ] **Whisper Speech-to-Text Pipeline**
-	- [ ] `faster-whisper` mit `compute_type="int8"` und Model `base.en` oder `small.en` integrieren.
-	- [ ] Word-Level-Timestamps für das candidate audio exportieren.
-	- [ ] Explizites Memory-Cleanup nach Transkription (`torch.cuda.empty_cache()` / GC Trigger).
-- [ ] **Pydantic Schema & Prompt Engineering (Packaging Agent)**
-	- [ ] Pydantic-Klasse definieren: `ClipMetadata` (Titel, Hook-Text, Virality-Score, Tags).
-	- [ ] System-Prompt für Qwen 2.5 7B aufsetzen (Fokus auf prägnante 5–8 Wörter Hooks).
-	- [ ] Structured Outputs Parsing via lokaler Ollama-OpenAI-Schnittstelle implementieren.
-	- [ ] Threshold-Filter: Verwerfen von Clips mit Virality-Score unter Benchmark.
+- [x] **Whisper Speech-to-Text Pipeline**
+	- [x] `faster-whisper` mit `compute_type="int8"` und Model `base.en` oder `small.en` integrieren. — Node `transcribe_audio`, WhisperModel base.en int8 CPU
+	- [x] Word-Level-Timestamps für das candidate audio exportieren. — `word_timestamps: [{word, start, end, probability}]`
+	- [x] Explizites Memory-Cleanup nach Transkription (`torch.cuda.empty_cache()` / GC Trigger). — `del model; gc.collect()` nach Transkription
+- [x] **Pydantic Schema & Prompt Engineering (Packaging Agent)**
+	- [x] Pydantic-Klasse definieren: `ClipMetadata` (Titel, Hook-Text, Virality-Score, Tags). — `models/signals.py`
+	- [x] System-Prompt für Qwen 2.5 7B aufsetzen (Fokus auf prägnante 5–8 Wörter Hooks). — `agents/prompts.py` mit 2 Few-Shot-Beispielen
+	- [x] Structured Outputs Parsing via lokaler Ollama-OpenAI-Schnittstelle implementieren. — Node `package_clip`, json_object mode, `_LLMPackage` Pydantic-Parser
+	- [x] Threshold-Filter: Verwerfen von Clips mit Virality-Score unter Benchmark. — `evaluate_virality` edge, `VIRALITY_THRESHOLD=6.0`
 
 ---
 
