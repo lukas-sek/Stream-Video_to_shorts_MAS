@@ -164,18 +164,31 @@ async def extract_audio(state: Phase2State) -> dict:
     loop = asyncio.get_event_loop()
 
     def _run() -> None:
-        (
-            ffmpeg
-            .input(segment_path)
-            .output(wav_path, ar=16000, ac=1, acodec="pcm_s16le", vn=None)
-            .overwrite_output()
-            .run(quiet=True)
-        )
+        try:
+            (
+                ffmpeg
+                .input(segment_path)
+                .output(wav_path, ar=16000, ac=1, acodec="pcm_s16le", vn=None)
+                .overwrite_output()
+                .run(quiet=False, capture_stdout=True, capture_stderr=True)
+            )
+        except ffmpeg.Error as exc:  # type: ignore[attr-defined]
+            stderr_text = exc.stderr.decode(errors="replace") if exc.stderr else ""
+            raise RuntimeError(f"ffmpeg audio extraction failed: {stderr_text[-400:]}") from exc
+
+        # Validate the WAV header — ffmpeg can exit 0 but produce a corrupt/empty
+        # file when the .ts segment has no decodable audio track.
+        wav_file = Path(wav_path)
+        if not wav_file.exists() or wav_file.stat().st_size < 44:
+            raise RuntimeError(f"Audio extraction produced an empty file: {wav_path}")
+        with wav_file.open("rb") as fh:
+            magic = fh.read(4)
+        if magic != b"RIFF":
+            raise RuntimeError(
+                f"Audio extraction produced an invalid WAV (magic={magic!r}): {wav_path}"
+            )
 
     await loop.run_in_executor(None, _run)
-
-    if not Path(wav_path).exists():
-        raise RuntimeError(f"Audio extraction failed: {wav_path} not created")
 
     logger.info("WAV saved: %s", wav_path)
     return {"wav_path": wav_path}
@@ -692,7 +705,7 @@ def build_graph(checkpointer=None) -> object:
     builder = StateGraph(Phase2State)
 
     # Phase 2 nodes
-    builder.add_node("download_segment", download_segment, timeout=SEGMENT_DURATION + 30)
+    builder.add_node("download_segment", download_segment, timeout=SEGMENT_DURATION + 90)  # +90 s headroom for slow CDN/network
     builder.add_node("extract_audio", extract_audio, timeout=60)
     builder.add_node("run_vad", run_vad, timeout=120)
     builder.add_node("analyze_rms", analyze_rms, timeout=30)
