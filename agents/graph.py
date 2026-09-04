@@ -1,5 +1,5 @@
 """
-Phase 2 + 3 LangGraph StateGraph — Detection & Packaging Pipeline.
+Phase 2 + 3 + 4 LangGraph StateGraph — Detection, Packaging & Editing Pipeline.
 
 Phase 2 nodes:
   1. download_segment  — streamlink | ffmpeg pipe, saves raw .ts clip
@@ -14,6 +14,11 @@ Phase 3 nodes (chained after emit_candidate):
   8. evaluate_virality — conditional: finalize_clip OR discard_transcript
   9. finalize_clip     — write to output/clips.jsonl (passing clips)
  10. discard_transcript— delete .wav, log discard reason
+
+Phase 4 nodes (chained after finalize_clip):
+ 11. prepare_edit      — compute cut_points + generate .ass subtitle file
+ 12. render_video      — FFmpeg: dead-air trim + 9:16 reframe + subtitle burn-in
+ 13. store_edit        — assemble EditedClip, write to output/edits.jsonl
 
 Invoked once per ChatSpike by pipeline.py.
 """
@@ -35,7 +40,8 @@ from langgraph.graph import END, START, StateGraph  # type: ignore[import-untype
 from typing_extensions import TypedDict
 
 from agents.prompts import build_messages
-from models.signals import AudioAnalysis, ChatSpike, ClipMetadata, _LLMPackage
+from agents.subtitles import escape_ass_path, generate_ass
+from models.signals import AudioAnalysis, ChatSpike, ClipMetadata, EditedClip, _LLMPackage
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +56,18 @@ WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "base.en")
 OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "shorts-llm")
 
+CUT_GAP_MS: int = int(os.getenv("CUT_GAP_MS", "400"))
+VIDEO_LAYOUT: str = os.getenv("VIDEO_LAYOUT", "center_crop")
+FACECAM_ROI: str = os.getenv("FACECAM_ROI", "1280,720,640,360")
+VIDEO_CRF: int = int(os.getenv("VIDEO_CRF", "23"))
+VIDEO_PRESET: str = os.getenv("VIDEO_PRESET", "fast")
+
 OUTPUT_DIR = Path("output/segments")
+FINAL_DIR = Path("output/final")
 CLIPS_LOG = Path("output/clips.jsonl")
+EDITS_LOG = Path("output/edits.jsonl")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+FINAL_DIR.mkdir(parents=True, exist_ok=True)
 CLIPS_LOG.parent.mkdir(parents=True, exist_ok=True)
 
 
@@ -74,6 +89,10 @@ class Phase2State(TypedDict):
     word_timestamps: Annotated[list[dict], lambda a, b: b]  # always replace
     language: str
     clip_metadata: ClipMetadata | None
+    # Phase 4
+    cut_points: Annotated[list[dict], lambda a, b: b]   # speech windows on trimmed timeline
+    ass_path: str
+    output_path: str
 
 
 # ---------------------------------------------------------------------------
@@ -454,10 +473,198 @@ async def discard_transcript(state: Phase2State) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Phase 4 Node 11: prepare_edit
+# ---------------------------------------------------------------------------
+async def prepare_edit(state: Phase2State) -> dict:
+    """
+    Compute cut_points from vad_segments (filter gaps > CUT_GAP_MS),
+    then generate the .ass subtitle file with time-adjusted word timestamps.
+    """
+    vad_segments: list[dict] = state["vad_segments"]
+    word_timestamps: list[dict] = state["word_timestamps"]
+    segment_path: str = state["segment_path"]
+
+    gap_threshold = CUT_GAP_MS / 1000.0
+
+    # Build cut_points: keep speech segments, drop gaps > threshold
+    cut_points: list[dict] = []
+    if not vad_segments:
+        # No VAD data — use the full clip as one segment
+        logger.warning("No VAD segments found; using full clip without trimming")
+        cut_points = [{"start": 0.0, "end": float(SEGMENT_DURATION)}]
+    else:
+        for i, seg in enumerate(vad_segments):
+            if i == 0:
+                cut_points.append(seg)
+                continue
+            gap = float(seg["start"]) - float(vad_segments[i - 1]["end"])
+            if gap <= gap_threshold:
+                # Merge with previous segment (gap too small to cut)
+                cut_points[-1] = {"start": cut_points[-1]["start"], "end": seg["end"]}
+            else:
+                cut_points.append(seg)
+
+    logger.info(
+        "Cut list: %d segment(s), gap threshold=%.3fs, total kept=%.1fs",
+        len(cut_points),
+        gap_threshold,
+        sum(float(s["end"]) - float(s["start"]) for s in cut_points),
+    )
+
+    # Generate .ass subtitle file (adjusted timestamps)
+    ass_path = segment_path.replace(".ts", ".ass")
+    loop = asyncio.get_event_loop()
+    abs_ass_path = await loop.run_in_executor(
+        None, generate_ass, word_timestamps, cut_points, ass_path
+    )
+    logger.info("ASS subtitle file written: %s", abs_ass_path)
+
+    return {"cut_points": cut_points, "ass_path": abs_ass_path}
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 Node 12: render_video
+# ---------------------------------------------------------------------------
+async def render_video(state: Phase2State) -> dict:
+    """
+    Single FFmpeg pass:
+      1. Dead-air trimming via select/aselect with cut_points
+      2. 9:16 reframing (center_crop or stacked layout)
+      3. .ass subtitle burn-in
+
+    Output: output/final/{channel}_{ts}.mp4
+    """
+    segment_path = state["segment_path"]
+    ass_path = state["ass_path"]
+    cut_points: list[dict] = state["cut_points"]
+    spike: ChatSpike = state["spike"]
+
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    output_path = str(FINAL_DIR / f"{spike.channel}_{ts}.mp4")
+
+    # Build select expression from cut_points
+    def _build_select_expr(points: list[dict]) -> str:
+        parts = [
+            f"between(t\\,{float(s['start']):.3f}\\,{float(s['end']):.3f})"
+            for s in points
+        ]
+        return "+".join(parts) if parts else "1"
+
+    select_expr = _build_select_expr(cut_points)
+    ass_escaped = escape_ass_path(ass_path)
+
+    # Build video filter chain depending on layout
+    if VIDEO_LAYOUT == "stacked":
+        try:
+            fx, fy, fw, fh = [int(v) for v in FACECAM_ROI.split(",")]
+        except ValueError:
+            logger.warning("Invalid FACECAM_ROI '%s'; falling back to center_crop", FACECAM_ROI)
+            VIDEO_LAYOUT_EFFECTIVE = "center_crop"
+        else:
+            VIDEO_LAYOUT_EFFECTIVE = "stacked"
+            # gameplay: full frame minus the facecam area, centered
+            gx, gy = 0, 0
+            gw = fx  # everything to the left of the facecam
+            gh = fh
+    else:
+        VIDEO_LAYOUT_EFFECTIVE = "center_crop"
+
+    if VIDEO_LAYOUT_EFFECTIVE == "stacked":
+        vf_reframe = (
+            f"[0:v]crop={fw}:{fh}:{fx}:{fy},scale=1080:608[fc];"
+            f"[0:v]crop={gw}:{gh}:{gx}:{gy},scale=1080:1312[gp];"
+            "[fc][gp]vstack=inputs=2[stacked];"
+            f"[stacked]select='{select_expr}',setpts=N/FRAME_RATE/TB,"
+            f"subtitles='{ass_escaped}'[vout]"
+        )
+    else:
+        # center_crop: crop 9:16 center, scale to 1080x1920
+        vf_reframe = (
+            f"[0:v]select='{select_expr}',setpts=N/FRAME_RATE/TB,"
+            "crop=ih*9/16:ih:(iw-ih*9/16)/2:0,"
+            "scale=1080:1920:force_original_aspect_ratio=disable,"
+            f"subtitles='{ass_escaped}'[vout]"
+        )
+
+    af = f"[0:a]aselect='{select_expr}',asetpts=N/SR/TB[aout]"
+    filter_complex = f"{vf_reframe};{af}"
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", segment_path,
+        "-filter_complex", filter_complex,
+        "-map", "[vout]",
+        "-map", "[aout]",
+        "-c:v", "libx264",
+        "-preset", VIDEO_PRESET,
+        "-crf", str(VIDEO_CRF),
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-movflags", "+faststart",
+        output_path,
+    ]
+
+    logger.info("Rendering video: %s (layout=%s)", output_path, VIDEO_LAYOUT_EFFECTIVE)
+
+    loop = asyncio.get_event_loop()
+
+    def _run() -> None:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=300,
+        )
+        if result.returncode != 0:
+            stderr_tail = result.stderr[-2000:].decode("utf-8", errors="replace")
+            raise RuntimeError(f"FFmpeg render failed:\n{stderr_tail}")
+
+    await loop.run_in_executor(None, _run)
+
+    size_mb = Path(output_path).stat().st_size / 1e6
+    logger.info("Render complete: %s (%.1f MB)", output_path, size_mb)
+    return {"output_path": output_path}
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 Node 13: store_edit
+# ---------------------------------------------------------------------------
+async def store_edit(state: Phase2State) -> dict:
+    """
+    Assemble EditedClip, compute final duration, write to output/edits.jsonl.
+    """
+    output_path = state["output_path"]
+    cut_points = state["cut_points"]
+
+    # Compute total duration from cut_points
+    duration = sum(float(s["end"]) - float(s["start"]) for s in cut_points)
+
+    clip_metadata: ClipMetadata = state["clip_metadata"]  # type: ignore[assignment]
+    edited = EditedClip(
+        clip_metadata=clip_metadata,
+        cut_points=cut_points,
+        ass_path=state["ass_path"],
+        output_path=output_path,
+        duration=round(duration, 2),
+    )
+
+    with EDITS_LOG.open("a", encoding="utf-8") as fh:
+        fh.write(edited.model_dump_json() + "\n")
+
+    logger.info(
+        "EDIT STORED  output=%s  duration=%.1fs  title=%r",
+        output_path,
+        duration,
+        clip_metadata.title,
+    )
+    return {}
+
+
+# ---------------------------------------------------------------------------
 # Graph construction
 # ---------------------------------------------------------------------------
 def build_graph(checkpointer=None) -> object:
-    """Compile and return the Phase 2+3 detection & packaging StateGraph."""
+    """Compile and return the Phase 2+3+4 detection, packaging & editing StateGraph."""
     builder = StateGraph(Phase2State)
 
     # Phase 2 nodes
@@ -474,6 +681,11 @@ def build_graph(checkpointer=None) -> object:
     builder.add_node("finalize_clip", finalize_clip)
     builder.add_node("discard_transcript", discard_transcript)
 
+    # Phase 4 nodes
+    builder.add_node("prepare_edit", prepare_edit, timeout=30)
+    builder.add_node("render_video", render_video, timeout=300)
+    builder.add_node("store_edit", store_edit)
+
     # Phase 2 edges
     builder.add_edge(START, "download_segment")
     builder.add_edge("download_segment", "extract_audio")
@@ -486,7 +698,7 @@ def build_graph(checkpointer=None) -> object:
     )
     builder.add_edge("discard_segment", END)
 
-    # Phase 3 edges (chained after emit_candidate instead of END)
+    # Phase 3 edges (chained after emit_candidate)
     builder.add_edge("emit_candidate", "transcribe_audio")
     builder.add_edge("transcribe_audio", "package_clip")
     builder.add_conditional_edges(
@@ -494,7 +706,12 @@ def build_graph(checkpointer=None) -> object:
         evaluate_virality,
         {"finalize_clip": "finalize_clip", "discard_transcript": "discard_transcript"},
     )
-    builder.add_edge("finalize_clip", END)
     builder.add_edge("discard_transcript", END)
+
+    # Phase 4 edges (chained after finalize_clip instead of END)
+    builder.add_edge("finalize_clip", "prepare_edit")
+    builder.add_edge("prepare_edit", "render_video")
+    builder.add_edge("render_video", "store_edit")
+    builder.add_edge("store_edit", END)
 
     return builder.compile(checkpointer=checkpointer)

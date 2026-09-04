@@ -90,3 +90,26 @@ class ClipMetadata(BaseModel):
         default=False,
         description="True when virality_score >= VIRALITY_THRESHOLD",
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 model
+# ---------------------------------------------------------------------------
+
+class EditedClip(BaseModel):
+    """
+    Final output of the Phase 4 video editor pipeline.
+    Consumed by Phase 5 (publisher).
+    """
+
+    clip_metadata: ClipMetadata = Field(description="Phase 3 result (transcript, LLM metadata)")
+    cut_points: list[dict] = Field(
+        default_factory=list,
+        description="Speech windows used for final cut [{start, end}] on the new timeline",
+    )
+    ass_path: str = Field(default="", description="Path to the generated .ass subtitle file")
+    output_path: str = Field(
+        default="",
+        description="Path to the final 9:16 MP4: output/final/{channel}_{ts}.mp4",
+    )
+    duration: float = Field(default=0.0, description="Final video duration in seconds")

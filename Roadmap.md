@@ -48,15 +48,15 @@ hardware_budget: 16GB RAM (Local Setup)
 ---
 
 ## Phase 4: Autonomous Video Editor Agent (Tier 4)
-- [ ] **9:16 Reframing & Layout Engine**
-	- [ ] Facecam-Erkennung via `MediaPipe` oder statische ROI-Presets (Region of Interest) definieren.
-	- [ ] FFmpeg-Filtergraph schreiben: Video aufteilen, Gameplay-Zentrum (unten) und Facecam (oben) im 9:16 Format vertikal stacken.
-- [ ] **Dead-Air Trimming**
-	- [ ] Schnittlisten basierend auf VAD-Pausen (> 400ms) generieren.
-	- [ ] Video mit `ffmpeg` an Keyframes schneiden, um Pacing zu erhöhen.
-- [ ] **Dynamic Subtitles (Burn-in)**
-	- [ ] Word-Level-Timestamps in `.ass`-Format mit Custom-Styles (Schriftart, Border, Pop-In-Animation) konvertieren.
-	- [ ] Subtitles per FFmpeg `subtitles`-Filter in den finalen MP4-Export rendern.
+- [x] **9:16 Reframing & Layout Engine**
+	- [x] Facecam-Erkennung via `MediaPipe` oder statische ROI-Presets (Region of Interest) definieren. — Statische ROI-Presets: `center_crop` (Standard) und `stacked` (Facecam oben, Gameplay unten) via `VIDEO_LAYOUT` env var
+	- [x] FFmpeg-Filtergraph schreiben: Video aufteilen, Gameplay-Zentrum (unten) und Facecam (oben) im 9:16 Format vertikal stacken. — Node `render_video`, single-pass filter_complex mit select+crop+vstack+subtitles
+- [x] **Dead-Air Trimming**
+	- [x] Schnittlisten basierend auf VAD-Pausen (> 400ms) generieren. — Node `prepare_edit`, gap_threshold=400ms, merge overlapping segments
+	- [x] Video mit `ffmpeg` an Keyframes schneiden, um Pacing zu erhöhen. — `select`/`aselect` filter mit `setpts=N/FRAME_RATE/TB`
+- [x] **Dynamic Subtitles (Burn-in)**
+	- [x] Word-Level-Timestamps in `.ass`-Format mit Custom-Styles (Schriftart, Border, Pop-In-Animation) konvertieren. — `agents/subtitles.py`: Impact 72px, white, 4px outline, `\fad(150,50)` per word, timestamp re-mapped after dead-air removal
+	- [x] Subtitles per FFmpeg `subtitles`-Filter in den finalen MP4-Export rendern. — burn-in via `subtitles='file.ass'` im filter_complex, Output: `output/final/*.mp4`
 
 ---
 

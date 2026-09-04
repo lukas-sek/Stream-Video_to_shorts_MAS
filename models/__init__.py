@@ -1,3 +1,3 @@
-from models.signals import AudioAnalysis, ChatSpike, ClipMetadata
+from models.signals import AudioAnalysis, ChatSpike, ClipMetadata, EditedClip
 
-__all__ = ["ChatSpike", "AudioAnalysis", "ClipMetadata"]
+__all__ = ["ChatSpike", "AudioAnalysis", "ClipMetadata", "EditedClip"]

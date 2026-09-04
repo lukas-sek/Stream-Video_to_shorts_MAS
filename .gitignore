@@ -221,3 +221,5 @@ __marimo__/
 output/segments/
 output/candidates.jsonl
 output/clips.jsonl
+output/final/
+output/edits.jsonl
