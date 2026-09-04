@@ -111,8 +111,15 @@ async def download_segment(state: Phase2State) -> dict:
     logger.info("Downloading %ds segment from %s → %s", SEGMENT_DURATION, stream_url, segment_path)
 
     # streamlink pipes raw stream bytes; ffmpeg demuxes and cuts to SEGMENT_DURATION
+    # Resolve streamlink from the same venv as the current Python interpreter so
+    # it works even when the venv Scripts/ folder is not on the system PATH.
+    import sys as _sys
+    _venv_scripts = Path(_sys.executable).parent
+    _streamlink_exe = _venv_scripts / "streamlink.exe"
+    _streamlink_cmd = str(_streamlink_exe) if _streamlink_exe.exists() else "streamlink"
+
     cmd_streamlink = [
-        "streamlink", "--stdout", "--quiet",
+        _streamlink_cmd, "--stdout", "--quiet",
         stream_url, "best",
     ]
     cmd_ffmpeg = [
