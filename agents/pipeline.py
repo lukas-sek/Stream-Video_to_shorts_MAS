@@ -57,11 +57,15 @@ logger = logging.getLogger("pipeline")
 async def process_spikes(
     spike_queue: asyncio.Queue[ChatSpike],
     graph,
-    max_concurrent: int = 2,
+    max_concurrent: int = 1,
 ) -> None:
     """
     Drain the spike queue and invoke the LangGraph pipeline for each event.
-    Limits concurrency to max_concurrent to protect RAM on a 16 GB machine.
+    Concurrency is capped at 1 on CPU-only hardware: Whisper + Ollama are
+    both CPU-bound and starve each other when run in parallel, causing
+    NodeTimeoutError on transcribe_audio (180 s) and package_clip (60 s).
+    A second spike detected while the first is processing simply waits in
+    the queue (maxsize=10) and is handled immediately after.
     """
     semaphore = asyncio.Semaphore(max_concurrent)
 

@@ -192,10 +192,27 @@ async def run_vad(state: Phase2State) -> dict:
     loop = asyncio.get_event_loop()
 
     def _run() -> list[dict]:
-        from silero_vad import get_speech_timestamps, load_silero_vad, read_audio  # lazy import
+        import wave as _wave  # stdlib — no torchaudio needed
+        import torch as _torch
+        from silero_vad import get_speech_timestamps, load_silero_vad  # no read_audio import
+
+        # Load 16 kHz mono WAV without torchaudio (avoids torchcodec requirement in
+        # torchaudio>=2.9 which is incompatible with Windows CPU installs).
+        with _wave.open(wav_path, "rb") as wf:
+            sampwidth = wf.getsampwidth()
+            n_channels = wf.getnchannels()
+            raw = wf.readframes(wf.getnframes())
+        if sampwidth == 2:
+            audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+        elif sampwidth == 4:
+            audio = np.frombuffer(raw, dtype=np.int32).astype(np.float32) / 2_147_483_648.0
+        else:
+            raise RuntimeError(f"Unsupported WAV sample width: {sampwidth} bytes")
+        if n_channels > 1:
+            audio = audio.reshape(-1, n_channels).mean(axis=1)
+        wav = _torch.from_numpy(audio)
 
         model = load_silero_vad()
-        wav = read_audio(wav_path, sampling_rate=16000)
         raw_timestamps = get_speech_timestamps(wav, model, return_seconds=True)
         # Ensure JSON-serialisable plain dicts
         segments = [{"start": float(t["start"]), "end": float(t["end"])} for t in raw_timestamps]
@@ -683,8 +700,8 @@ def build_graph(checkpointer=None) -> object:
     builder.add_node("discard_segment", discard_segment)
 
     # Phase 3 nodes
-    builder.add_node("transcribe_audio", transcribe_audio, timeout=180)
-    builder.add_node("package_clip", package_clip, timeout=60)
+    builder.add_node("transcribe_audio", transcribe_audio, timeout=360)  # 75 s clip @ CPU int8 ≈ 60–120 s; 360 s is safe headroom
+    builder.add_node("package_clip", package_clip, timeout=180)  # Ollama qwen2.5:7b can take 60–120 s cold
     builder.add_node("finalize_clip", finalize_clip)
     builder.add_node("discard_transcript", discard_transcript)
 
