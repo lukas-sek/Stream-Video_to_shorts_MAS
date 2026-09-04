@@ -184,7 +184,11 @@ def escape_ass_path(path: str) -> str:
       - Colons in drive letter escaped as \\\\:  (e.g. C\\:/path/to/file.ass)
     """
     p = path.replace("\\", "/")
-    # Escape drive-letter colon:  C:/...  →  C\\:/...
+    # Escape drive-letter colon:  C:/...  →  C\:/...
+    # FFmpeg filtergraph interprets \: as a literal colon (escaped).
+    # Using \\: (double-backslash) was wrong — FFmpeg parsed \\ as an escaped
+    # backslash and then : as the option separator, causing the path after the
+    # colon to be misread as the "original_size" parameter.
     if len(p) >= 2 and p[1] == ":":
-        p = p[0] + "\\\\:" + p[2:]
+        p = p[0] + "\\:" + p[2:]
     return p

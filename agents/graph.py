@@ -48,11 +48,11 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-SEGMENT_DURATION: int = int(os.getenv("SEGMENT_DURATION", "75"))
+SEGMENT_DURATION: int = int(os.getenv("SEGMENT_DURATION", "45"))  # reduced from 75 s: shorter clips = faster Whisper inference (~30–40 s vs ~90 s on CPU), less download time (~50 MB vs 80 MB), prevents zombie thread pile-up
 RMS_THRESHOLD: float = float(os.getenv("RMS_THRESHOLD", "0.05"))
 RMS_WINDOW_MS: int = 500
-VIRALITY_THRESHOLD: float = float(os.getenv("VIRALITY_THRESHOLD", "6.0"))
-WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "base.en")
+VIRALITY_THRESHOLD: float = float(os.getenv("VIRALITY_THRESHOLD", "5.0"))  # lowered from 6.0; raise again once German transcripts are accurate
+WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "base")  # multilingual; use base.en only for English-only streams
 OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "shorts-llm")
 
